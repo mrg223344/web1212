@@ -38,7 +38,7 @@ def load_model():
 model = load_model()
 
 def plot_gauge(prob):
-    """绘制风险仪表盘"""
+    """绘制风险仪表盘（修正版：解决标题遮挡问题）"""
     # 颜色逻辑
     if prob < 0.3: color = "#28a745" # Green
     elif prob < 0.7: color = "#ffc107" # Yellow
@@ -49,7 +49,11 @@ def plot_gauge(prob):
         value = prob * 100,
         number = {'suffix': "%", 'font': {'size': 40}},
         domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {'text': "疗效不佳风险 (Outcome=1)", 'font': {'size': 18}},
+        title = {
+            'text': "疗效不佳风险 (Outcome=1)", 
+            'font': {'size': 18},
+            'align': 'center'
+        },
         gauge = {
             'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
             'bar': {'color': color},
@@ -68,7 +72,16 @@ def plot_gauge(prob):
             }
         }
     ))
-    fig.update_layout(height=250, margin=dict(l=20, r=20, t=30, b=20))
+    
+    # --- 关键修改点 ---
+    # 1. height: 从 250 改为 300，增加整体高度
+    # 2. margin: t (top) 从 30 改为 80，给标题留出足够空间
+    # 3. margin: b (bottom) 设为 10，减少底部空白
+    fig.update_layout(
+        height=300, 
+        margin=dict(l=30, r=30, t=80, b=10),
+        font={'family': "Arial"} # 确保字体渲染正常
+    )
     return fig
 
 # ---------- 3. 侧边栏：参数输入 ----------
@@ -180,4 +193,5 @@ with tab2:
 
 # ---------- 底部声明 ----------
 st.markdown("---")
+
 st.caption("⚠️ **免责声明**：本工具仅供科研辅助参考，不能替代医生的专业临床诊断。")

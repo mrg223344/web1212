@@ -1,197 +1,122 @@
-# app.py
+# -*- coding: utf-8 -*-
+"""
+Streamlit 应用：宫腔镜手术治疗CSD疗效预测平台（V1.6）
+
+特点：
+- 自动从当前目录加载模型文件 calibrated_rf_model.pkl
+- 仅支持单例预测
+- 标题居中加大字号，美观；下方小字说明为“宫腔镜手术治疗CSD疗效结局预测”；五个指标在显示时保留两位小数；结果在页面正中以大号百分比 + 进度条形式直观呈现；概率显示为“手术后疗效显著(有效)的预测概率”
+
+运行：
+streamlit run app.py
+
+注意：预测仅供参考，不能替代临床决策。
+"""
+
 import streamlit as st
-import joblib
-import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
+import numpy as np
+import pickle
+import os
 
-# ---------- 1. 基础配置 ----------
-st.set_page_config(
-    page_title="CSD疗效预测系统",
-    page_icon="🩺",
-    layout="wide", # 使用宽屏模式，展示更多信息
-    initial_sidebar_state="expanded"
-)
+# 页面配置
+st.set_page_config(page_title="宫腔镜手术治疗CSD疗效预测平台", page_icon="🩺", layout="centered")
 
-# 自定义 CSS 优化细节
+# 标题与介绍（居中、美化）
 st.markdown("""
-    <style>
-    .main .block-container {padding-top: 2rem;}
-    .stAlert {margin-top: 1rem;}
-    div[data-testid="stMetricValue"] {font-size: 2.5rem;}
-    </style>
+<div style='text-align: center;'>
+  <h1 style='color: #1E90FF; font-size:48px; margin-bottom: 0.2rem;'>🩺 宫腔镜手术治疗CSD疗效预测平台</h1>
+  <p style='color: gray; font-size:16px; margin-top: 0.1rem;'>基于机器学习模型，提供个体化宫腔镜手术治疗CSD疗效预测结果</p>
+</div>
+<hr style='border:1px solid #1E90FF;'>
 """, unsafe_allow_html=True)
 
-# ---------- 2. 模型加载与工具函数 ----------
-@st.cache_resource
-def load_model():
+# 固定模型文件名（当前目录）
+MODEL_FILENAME = 'calibrated_rf_model.pkl'
+MODEL_PATH = os.path.join(os.getcwd(), MODEL_FILENAME)
+
+# 侧边栏输入区域
+st.sidebar.markdown("<h3 style='color:#1E90FF;'>请输入患者特征</h3>", unsafe_allow_html=True)
+
+bmi = st.sidebar.number_input("BMI（体质指数）", min_value=0.0, max_value=100.0, value=22.0, step=0.01, format="%.2f")
+rmt = st.sidebar.number_input("RMT（残余肌层厚度，mm）", min_value=0.0, max_value=50.0, value=4.00, step=0.01, format="%.2f")
+length = st.sidebar.number_input("Length（憩室长度，mm）", min_value=0.0, max_value=200.0, value=12.00, step=0.01, format="%.2f")
+pre_hb = st.sidebar.number_input("Pre_Hb（术前血红蛋白，g/L）", min_value=0.0, max_value=300.0, value=120.00, step=0.01, format="%.2f")
+pre_alb = st.sidebar.number_input("Pre_Alb（术前白蛋白，g/L）", min_value=0.0, max_value=100.0, value=40.00, step=0.01, format="%.2f")
+
+predict_button = st.sidebar.button("🔍 立即预测")
+
+# 模型加载函数
+@st.cache_data(show_spinner=False)
+def load_model(path):
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"未找到模型文件：{path}")
+    with open(path, 'rb') as f:
+        model = pickle.load(f)
+    return model
+
+try:
+    model = load_model(MODEL_PATH)
+except Exception as e:
+    st.error(f"模型加载失败：{e}")
+    st.stop()
+
+# 预测函数
+def predict_single(model, features_dict):
+    df = pd.DataFrame([features_dict], columns=['BMI','RMT','Length','Pre_Hb','Pre_Alb']).astype(float)
+    if hasattr(model, 'predict_proba'):
+        prob = model.predict_proba(df)[:, 1][0]
+    else:
+        pred = model.predict(df)[0]
+        prob = float(pred)
+    label = int(prob >= 0.5)
+    return label, prob
+
+# 主体内容：如果点击预测则显示输入（两位小数）与居中百分比
+if predict_button:
+    features = {
+        'BMI': bmi,
+        'RMT': rmt,
+        'Length': length,
+        'Pre_Hb': pre_hb,
+        'Pre_Alb': pre_alb
+    }
+
+    # 显示输入值（保留两位小数）
+    st.markdown("<h3 style='color:#1E90FF;'>🔹 患者输入（保留两位小数）</h3>", unsafe_allow_html=True)
+    df_inputs = pd.DataFrame.from_dict(features, orient='index', columns=['值'])
+    df_inputs['值'] = df_inputs['值'].astype(float).map(lambda x: f"{x:.2f}")
+    st.table(df_inputs)
+
     try:
-        return joblib.load("lgb_best.pkl")
-    except FileNotFoundError:
-        st.error("未找到模型文件 `lgb_best.pkl`，请确保文件在同级目录下。")
-        # 返回一个伪造模型用于UI调试 (正式使用请删除此逻辑)
-        class DummyModel:
-            def predict_proba(self, X): return np.array([[0.2, 0.45]]) # 模拟输出
-        return DummyModel()
+        label, prob = predict_single(model, features)
+        prob_pct = prob * 100
+        prob_text = f"{prob_pct:.2f}%"
 
-model = load_model()
-
-def plot_gauge(prob):
-    """绘制风险仪表盘（修正版：解决标题遮挡问题）"""
-    # 颜色逻辑
-    if prob < 0.3: color = "#28a745" # Green
-    elif prob < 0.7: color = "#ffc107" # Yellow
-    else: color = "#dc3545" # Red
-    
-    fig = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = prob * 100,
-        number = {'suffix': "%", 'font': {'size': 40}},
-        domain = {'x': [0, 1], 'y': [0, 1]},
-        title = {
-            'text': "疗效不佳风险 (Outcome=1)", 
-            'font': {'size': 18},
-            'align': 'center'
-        },
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
-            'bar': {'color': color},
-            'bgcolor': "white",
-            'borderwidth': 2,
-            'bordercolor': "gray",
-            'steps': [
-                {'range': [0, 30], 'color': 'rgba(40, 167, 69, 0.1)'},
-                {'range': [30, 70], 'color': 'rgba(255, 193, 7, 0.1)'},
-                {'range': [70, 100], 'color': 'rgba(220, 53, 69, 0.1)'}
-            ],
-            'threshold': {
-                'line': {'color': "red", 'width': 4},
-                'thickness': 0.75,
-                'value': prob * 100
-            }
-        }
-    ))
-    
-    # --- 关键修改点 ---
-    # 1. height: 从 250 改为 300，增加整体高度
-    # 2. margin: t (top) 从 30 改为 80，给标题留出足够空间
-    # 3. margin: b (bottom) 设为 10，减少底部空白
-    fig.update_layout(
-        height=300, 
-        margin=dict(l=30, r=30, t=80, b=10),
-        font={'family': "Arial"} # 确保字体渲染正常
-    )
-    return fig
-
-# ---------- 3. 侧边栏：参数输入 ----------
-with st.sidebar:
-    st.image("https://img.icons8.com/color/96/doctor-male--v1.png", width=60) # 示例图标
-    st.title("参数配置")
-    st.info("请根据术前检查结果录入数据")
-
-    st.markdown("### 🧬 解剖结构")
-    length = st.number_input("憩室长度 (cm)", 0.0, 5.0, 0.8, 0.1, help="长轴最大径")
-    rmt    = st.number_input("残余肌层厚度 (cm)", 0.0, 5.0, 0.3, 0.01, help="底部到浆膜面最短距离")
-
-    st.divider()
-
-    st.markdown("### 🧪 临床指标")
-    col_sb1, col_sb2 = st.columns(2)
-    with col_sb1:
-        pre_hb = st.number_input("Hb (g/L)", 50, 200, 115, 1, help="术前血红蛋白")
-        post_wbc = st.number_input("术后 WBC", 1.0, 30.0, 5.5, 0.1, help="×10⁹/L")
-    with col_sb2:
-        pre_alb = st.number_input("Alb (g/L)", 20, 60, 40, 1, help="术前白蛋白")
-        bmi     = st.number_input("BMI", 10.0, 60.0, 23.0, 0.1)
-
-    # 构造输入数据
-    input_df = pd.DataFrame([[
-        length, rmt, pre_hb, pre_alb, post_wbc, bmi
-    ]], columns=['Length', 'RMT', 'Pre_Hb', 'Pre_Alb', 'Post_WBC', 'BMI']).astype("float32")
-
-# ---------- 4. 主界面 ----------
-st.title("🔍 宫腔镜手术修复 CSD 疗效预测系统")
-st.markdown("基于机器学习模型 (`LightGBM`) 预测手术疗效不佳的概率。")
-
-# 使用 Tabs 分离功能
-tab1, tab2 = st.tabs(["👤 单例智能诊断", "📂 批量数据分析"])
-
-# === Tab 1: 单例预测 ===
-with tab1:
-    col_main, col_chart = st.columns([1, 1.5], gap="large")
-
-    with col_main:
-        st.markdown("#### 当前输入概览")
-        st.dataframe(input_df.T.style.format("{:.2f}"), use_container_width=True, height=250)
-        
-        predict_btn = st.button("🚀 开始预测", type="primary", use_container_width=True)
-
-    if predict_btn:
-        with st.spinner("模型计算中..."):
-            prob = float(model.predict_proba(input_df)[0, 1])
-        
-        # 结果展示区
-        with col_chart:
-            st.plotly_chart(plot_gauge(prob), use_container_width=True)
-
-        # 风险解释区（跨栏展示）
-        st.divider()
-        if prob < 0.3:
-            st.success(f"**低风险 (概率: {prob:.1%})**：预后良好的可能性较大。")
-        elif prob < 0.7:
-            st.warning(f"**中风险 (概率: {prob:.1%})**：处于临界范围，建议结合临床综合判断。")
+        # 居中显示大号百分比并配合进度条
+        st.markdown("<hr style='border:1px solid #1E90FF;'>", unsafe_allow_html=True)
+        st.markdown("<div style='text-align:center; padding: 10px;'>", unsafe_allow_html=True)
+        if label == 1:
+            st.markdown(f"<h2 style='color:#FF4500; margin:0;'>预测结果：宫腔镜手术治疗CSD有效 </h2>", unsafe_allow_html=True)
         else:
-            st.error(f"**高风险 (概率: {prob:.1%})**：疗效不佳风险较高，需重点关注。")
+            st.markdown(f"<h2 style='color:#2E8B57; margin:0;'>预测结果：宫腔镜手术治疗CSD有效 </h2>", unsafe_allow_html=True)
 
-# === Tab 2: 批量预测 ===
-with tab2:
-    st.markdown("#### 📤 上传 CSV 文件")
-    st.markdown("文件需包含以下列：`Length`, `RMT`, `Pre_Hb`, `Pre_Alb`, `Post_WBC`, `BMI`")
-    
-    uploaded = st.file_uploader("拖拽文件到此处", type=["csv"])
-    
-    if uploaded:
-        batch = pd.read_csv(uploaded)
-        required_cols = set(input_df.columns)
-        miss = required_cols - set(batch.columns)
-        
-        if miss:
-            st.error(f"❌ 文件格式错误，缺少列：{', '.join(miss)}")
-        else:
-            with st.spinner("正在批量计算..."):
-                batch["Pred_Prob"] = model.predict_proba(batch[list(input_df.columns)])[:, 1]
-                
-                # 统计概览
-                st.success(f"✅ 成功处理 {len(batch)} 条数据")
-                
-                col_b1, col_b2 = st.columns([2, 1])
-                with col_b1:
-                    fig_hist = px.histogram(
-                        batch, x="Pred_Prob", nbins=20, 
-                        title="预测概率分布",
-                        color_discrete_sequence=['#636EFA'],
-                        labels={"Pred_Prob": "风险概率"}
-                    )
-                    st.plotly_chart(fig_hist, use_container_width=True)
-                
-                with col_b2:
-                    st.markdown("##### 快速统计")
-                    st.write(batch["Pred_Prob"].describe())
-                    
-                    csv = batch.to_csv(index=False).encode('utf-8-sig') # 使用 sig 解决中文乱码
-                    st.download_button(
-                        label="📥 下载预测结果",
-                        data=csv,
-                        file_name="CSD_Prediction_Results.csv",
-                        mime="text/csv",
-                        type="primary"
-                    )
-                
-                with st.expander("查看详细数据"):
-                    st.dataframe(batch.style.background_gradient(subset=['Pred_Prob'], cmap="RdYlGn_r"))
+        # 大号百分比
+        st.markdown(f"<div style='font-size:56px; font-weight:700; color:#333; margin-top:8px;'>{prob_text}</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-# ---------- 底部声明 ----------
-st.markdown("---")
+        # 进度条（居中）
+        st.progress(min(max(prob, 0.0), 1.0))
 
-st.caption("⚠️ **免责声明**：本工具仅供科研辅助参考，不能替代医生的专业临床诊断。")
+        # 补充说明
+        st.write(f"宫腔镜手术治疗CSD有效的预测概率：{prob:.4f}")
+        st.info("⚠️ 说明：预测结果仅供科研与教学参考，不能替代临床判断。若用于临床请做严格外部验证与合规审查。")
+
+    except Exception as e:
+        st.error(f"预测失败：{e}")
+else:
+    st.markdown("<p style='text-align:center;color:gray;'>请在左侧输入患者特征后点击“立即预测”。</p>", unsafe_allow_html=True)
+
+# 页脚
+st.sidebar.markdown("<hr style='border:1px solid #1E90FF;'>", unsafe_allow_html=True)
+st.sidebar.markdown("<p style='text-align:center;color:gray;'>开发：DiagnoML 平台 ｜ 版本 V1.6</p>", unsafe_allow_html=True)
